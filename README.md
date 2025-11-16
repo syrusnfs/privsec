@@ -1,6 +1,8 @@
-# PRIVSEC
+
+![Project Banner](https://raw.githubusercontent.com/syrusnfs/privsec/main/img/privsec.png)
 
 **Privilege Escalation Security Audit Tool** - Fast, focused Linux privilege escalation scanner with clean output.
+
 
 [![Version](https://img.shields.io/badge/version-2.0-blue.svg)](https://github.com/syrusnfs/privsec)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
