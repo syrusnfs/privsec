@@ -24,8 +24,11 @@ PRIVSEC performs 14 targeted security checks to identify common privilege escala
 ## Usage
 
 ```bash
-# Direct Use
+# Direct Use Privsec Only
 curl -L https://raw.githubusercontent.com/syrusnfs/privsec/main/privsec.sh | bash
+
+# Direct Use Privsec + Linpeas
+curl -L https://raw.githubusercontent.com/syrusnfs/privsec/main/privsec.sh | bash -s -- --linpeas
 
 # Download
 curl -L https://github.com/syrusnfs/privsec/raw/main/privsec.sh -o privsec.sh
