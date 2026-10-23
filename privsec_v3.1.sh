@@ -1,18 +1,14 @@
 #!/bin/bash
 
 #  PRIVSEC - Privilege Escalation and Security Audit Tool
-#  Version: 3.0
+#  Version: 3.1
 #  Author: Syrus
 
 RUN_LINPEAS=false
-INSTALL_OPENSCAP=false
 SHOW_PROGRESS=true
 
 for arg in "$@"; do
     case "$arg" in
-        --openscap)
-            INSTALL_OPENSCAP=true
-            ;;
         --no-progress)
             SHOW_PROGRESS=false
             ;;
@@ -20,59 +16,23 @@ for arg in "$@"; do
             RUN_LINPEAS=true
             ;;
         -h|--help)
-            echo "PRIVSEC - Privilege Escalation Security Audit Tool v3.0"
+            echo "PRIVSEC - Privilege Escalation Security Audit Tool v3.1"
             echo ""
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --linpeas        Run LinPEAS after PRIVSEC scan"
-            echo "  --openscap       Install OpenSCAP if missing, then run the audit"
             echo "  --no-progress    Disable interactive scan progress bar"
             echo "  -h, --help       Show this help message"
             echo ""
             echo "Examples:"
             echo "  sudo $0"
             echo "  sudo $0 --linpeas"
-            echo "  sudo $0 --openscap"
             echo ""
             exit 0
             ;;
     esac
 done
-
-if [ "$INSTALL_OPENSCAP" = true ]; then
-    if [ -r /etc/os-release ]; then
-        . /etc/os-release
-    fi
-    if [ "${ID:-}" != "ubuntu" ] && [ "${ID:-}" != "debian" ]; then
-        echo "[!] --openscap: automatic installation supports Ubuntu/Debian only." >&2
-    elif command -v oscap >/dev/null 2>&1; then
-        echo "[+] OpenSCAP already installed: $(command -v oscap)"
-    elif [ "$(id -u)" -ne 0 ]; then
-        echo "[!] Installation requires root. Run: sudo $0 --openscap" >&2
-        exit 1
-    elif ! command -v apt-get >/dev/null 2>&1; then
-        echo "[!] apt-get not found; OpenSCAP installation skipped." >&2
-    else
-        echo "[+] Installing OpenSCAP from distribution repositories..."
-        if apt-get update; then
-            OPENSCAP_PACKAGE=""
-            for candidate in openscap-scanner libopenscap8; do
-                if apt-cache show "$candidate" >/dev/null 2>&1; then
-                    OPENSCAP_PACKAGE="$candidate"
-                    break
-                fi
-            done
-            if [ -n "$OPENSCAP_PACKAGE" ] && DEBIAN_FRONTEND=noninteractive apt-get install -y "$OPENSCAP_PACKAGE" && command -v oscap >/dev/null 2>&1; then
-                echo "[+] OpenSCAP installed successfully."
-            else
-                echo "[!] OpenSCAP installation unsuccessful; audit will continue without OVAL evaluation." >&2
-            fi
-        else
-            echo "[!] apt update failed; audit will continue without OpenSCAP." >&2
-        fi
-    fi
-fi
 
 readonly YELLOW="\033[1;33m"
 readonly CYAN="\033[1;36m"
@@ -146,7 +106,7 @@ print_banner() {
     echo -e "  ║   ${WHITE}╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝╚══════╝ ╚═════╝${CYAN}                ║"
     echo -e "  ║   ${WHITE}Made by Syrus${CYAN}                                                       ║"
 	echo -e "  ║                                                                       ║"
-    echo -e "  ║   ${YELLOW}Privilege Escalation and Security Audit Tool ${DIM}v3.0${RESET}${CYAN}                   ║"
+    echo -e "  ║   ${YELLOW}Privilege Escalation and Security Audit Tool ${DIM}v3.1${RESET}${CYAN}                   ║"
     echo -e "  ║   ${GRAY}Automated Security Assessment & Vulnerability Analysis${CYAN}              ║"
     echo -e "  ║                                                                       ║"
     echo -e "  ╚═══════════════════════════════════════════════════════════════════════╝"
@@ -154,7 +114,7 @@ print_banner() {
     echo -e "  ${GRAY}Scan initiated: ${WHITE}$(date '+%Y-%m-%d %H:%M:%S')${RESET}\n"
 }
 
-SCAN_TOTAL_SECTIONS=27
+SCAN_TOTAL_SECTIONS=24
 SCAN_SECTIONS_STARTED=0
 SCAN_START_EPOCH=$(date +%s)
 PROGRESS_ACTIVE=false
@@ -616,18 +576,136 @@ else
     item PASS "No LD_* environment variables defined"
 fi
 
-section "0x0C │ Kernel Vulnerability Assessment"
+section "0x0C │ Linux Kernel - Known Privilege Escalation CVEs (through October 2026)"
 
-KERNEL=$(uname -r)
+KERNEL="$(uname -r)"
+item INFO "Running kernel: $KERNEL (read-only checks; no exploit code executed)"
+item INFO "Version-only matches are not proof of vulnerability: vendor backports and livepatches can change exposure"
+if command -v python3 >/dev/null 2>&1; then
+    while IFS='|' read -r level description; do
+        case "$level" in HIGH|MEDIUM|PASS|INFO) item "$level" "$description" ;; esac
+    done < <(python3 - <<'PYKERNEL'
+import os, re, subprocess, shutil
+from pathlib import Path
 
-case "$KERNEL" in
-    *3.13*|*3.2*|*2.6.3*|*4.4.0-21*|*5.4.0-*)
-        item HIGH "Kernel potentially vulnerable: $KERNEL (Known Public Exploits)"
-        ;;
-    *)
-        item PASS "No known critical kernel vulnerabilities"
-        ;;
-esac
+def run(*cmd):
+    try:
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+def emit(level, message):
+    print(level + '|' + message.replace('|', '/').replace('\n', ' ')[:440])
+
+release = run('uname', '-r')
+m = re.match(r'^(\d+)\.(\d+)\.(\d+)', release)
+version = tuple(map(int, m.groups())) if m else None
+osdata = {}
+try:
+    for line in Path('/etc/os-release').read_text().splitlines():
+        if '=' in line:
+            key, val = line.split('=', 1)
+            osdata[key] = val.strip('"')
+except OSError:
+    pass
+ubuntu = osdata.get('ID') == 'ubuntu'
+release_id = osdata.get('VERSION_ID', '')
+package = run('dpkg-query', '-W', '-f=${Version}', 'linux-image-' + release) if ubuntu else ''
+
+# Only vendor-verified Ubuntu GA kernel fixes are classified as fixed/vulnerable.
+fixed = {
+    ('18.04','4.15.0'): '4.15.0-251.263',
+    ('20.04','5.4.0'): '5.4.0-231.251',
+    ('22.04','5.15.0'): '5.15.0-181.191',
+    ('24.04','6.8.0'): '6.8.0-124.124',
+    ('25.10','6.17.0'): '6.17.0-35.35',
+    ('26.04','7.0.0'): '7.0.0-22.22',
+}
+family = '.'.join(release.split('.')[:3]) if release else ''
+threshold = fixed.get((release_id, family)) if ubuntu else None
+if threshold and package:
+    compare = subprocess.run(['dpkg','--compare-versions',package,'lt',threshold], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if compare.returncode == 0:
+        emit('HIGH', f'CVE-2026-43284 / CVE-2026-43500 Dirty Frag: running Ubuntu GA kernel package {package} predates Canonical fix {threshold}')
+    else:
+        emit('PASS', f'CVE-2026-43284 / CVE-2026-43500 Dirty Frag: running Ubuntu GA kernel package {package} meets Canonical fix {threshold}')
+else:
+    emit('INFO', 'CVE-2026-43284 / CVE-2026-43500 Dirty Frag: package-specific status unknown (HWE, OEM, cloud and custom kernels require matching vendor advisories)')
+
+# A broad catalogue of publicly reported local kernel escalation families.
+# These are triage hints, not universal version-based vulnerability verdicts.
+# The kernel upstream version alone cannot establish backported fixes.
+catalog = [
+    ('2026', 'CVE-2026-31431', 'Copy Fail', 'algif_aead / AF_ALG', (4,14,0), None, 'algif_aead'),
+    ('2026', 'CVE-2026-46300', 'Fragnesia', 'page-cache fragment handling', None, None, ''),
+    ('2026', 'CVE-2026-80844', 'DirtyAH6', 'IPv6 AH networking', None, None, 'ah6'),
+    ('2026', 'CVE-2026-81000', 'TUNderflow', 'TUN/TAP networking', None, None, 'tun'),
+    ('2026', 'CVE-2026-68121', 'PPPoEject', 'PPPoE networking', None, None, 'pppoe'),
+    ('2026', 'CVE-2026-74469', 'DiagSpill', 'network socket diagnostics', None, None, 'inet_diag'),
+    ('2025', 'CVE-2025-21756', 'Linux vsock', 'vsock transport', None, None, 'vsock'),
+    ('2024', 'CVE-2024-1086', 'nftables use-after-free', 'nf_tables', (3,15,0), (6,8,0), 'nf_tables'),
+    ('2024', 'CVE-2024-0582', 'io_uring use-after-free', 'io_uring', None, None, ''),
+    ('2023', 'CVE-2023-32233', 'Netfilter nf_tables UAF', 'nf_tables', (5,1,0), (6,3,2), 'nf_tables'),
+    ('2023', 'CVE-2023-2640 / CVE-2023-32629', 'GameOver(lay)', 'Ubuntu OverlayFS', None, None, 'overlay'),
+    ('2023', 'CVE-2023-0386', 'OverlayFS privilege escalation', 'OverlayFS', None, None, 'overlay'),
+    ('2023', 'CVE-2023-0179', 'Netfilter stack overflow', 'nf_tables', None, None, 'nf_tables'),
+    ('2022', 'CVE-2022-0847', 'Dirty Pipe', 'pipe page cache', (5,8,0), (5,16,11), ''),
+    ('2022', 'CVE-2022-2588', 'route4 UAF', 'network traffic control', None, None, 'cls_route'),
+    ('2022', 'CVE-2022-2586', 'nf_tables UAF', 'nf_tables', None, None, 'nf_tables'),
+    ('2022', 'CVE-2022-2585', 'route4 filter UAF', 'network traffic control', None, None, 'cls_route'),
+    ('2022', 'CVE-2022-34918', 'nf_tables heap overflow', 'nf_tables', None, None, 'nf_tables'),
+    ('2022', 'CVE-2022-25636', 'Netfilter heap out-of-bounds', 'nf_tables', None, None, 'nf_tables'),
+    ('2021', 'CVE-2021-22555', 'Netfilter heap out-of-bounds', 'Netfilter', None, None, 'ip_tables'),
+    ('2021', 'CVE-2021-3493', 'Ubuntu OverlayFS', 'OverlayFS', None, None, 'overlay'),
+    ('2021', 'CVE-2021-33909', 'Sequoia', 'filesystem path handling', None, None, ''),
+    ('2021', 'CVE-2021-26708', 'vsock race condition', 'vsock', None, None, 'vsock'),
+    ('2017', 'CVE-2017-16995', 'eBPF verifier', 'BPF', None, None, ''),
+    ('2016', 'CVE-2016-5195', 'Dirty COW', 'copy-on-write', None, None, ''),
+]
+
+loaded = set(run('lsmod').splitlines()[1:])
+loaded_names = {line.split()[0] for line in loaded if line.split()}
+try:
+    modules = Path('/proc/modules').read_text().splitlines()
+    loaded_names.update(line.split()[0] for line in modules if line.split())
+except OSError:
+    pass
+
+def available(mod):
+    if not mod:
+        return 'not checked'
+    if mod in loaded_names:
+        return 'loaded'
+    result = subprocess.run(['modinfo','-n',mod], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) if shutil.which('modinfo') else None
+    if result and result.returncode == 0:
+        return 'available (not loaded)'
+    return 'unknown/built-in/absent'
+
+for year, cve, name, subsystem, lower, upper, module in catalog:
+    if version and lower and version < lower:
+        continue
+    # Upstream ranges are indicative only; fixes may be backported.
+    note = ''
+    if version and upper and version >= upper:
+        note = '; outside the original upstream affected range (backports/forks may differ)'
+    state = ('; module=' + available(module)) if module else ''
+    emit('INFO', f'{year} {cve} {name}: review vendor patch status ({subsystem}{state}{note})')
+
+for mod in ('esp4','esp6','rxrpc','algif_aead','nf_tables','overlay'):
+    emit('INFO', f'Kernel attack-surface module {mod}: {available(mod)}')
+for path in ('/proc/sys/kernel/unprivileged_userns_clone','/proc/sys/kernel/unprivileged_bpf_disabled','/proc/sys/kernel/io_uring_disabled','/proc/sys/user/max_user_namespaces'):
+    try:
+        emit('INFO', f'{path}: {Path(path).read_text().strip()}')
+    except OSError:
+        pass
+if ubuntu and package:
+    emit('INFO', f'Running Ubuntu kernel package: {package}; check official Ubuntu CVE pages for each kernel flavour')
+emit('INFO', 'Catalogue coverage is curated through 2026-10-23, not an exhaustive or live vulnerability database')
+PYKERNEL
+    )
+else
+    item INFO "Python3 unavailable: kernel CVE catalogue skipped"
+fi
 
 section "0x0D │ Shared Library Security"
 
@@ -913,267 +991,7 @@ else
     item INFO "dpkg unavailable: package-version audit requires distribution-specific implementation"
 fi
 
-OVAL_ASSESSMENT_COMPLETE=false
-section "0x18 │ Ubuntu Security Advisories - Canonical OVAL"
-
-if [ -r /etc/os-release ]; then . /etc/os-release; fi
-if [ "${ID:-}" != "ubuntu" ]; then
-    item INFO "Canonical OVAL: Unsupported distribution (${ID:-unknown}); Ubuntu-only feed"
-elif ! command -v oscap >/dev/null 2>&1; then
-    item INFO "Canonical OVAL: OpenSCAP unavailable; install with sudo ./privsec.sh --openscap"
-elif ! command -v python3 >/dev/null 2>&1; then
-    item INFO "Canonical OVAL: Python3 unavailable; cannot validate and parse XML"
-elif ! command -v curl >/dev/null 2>&1; then
-    item INFO "Canonical OVAL: curl unavailable; cannot retrieve official feed"
-else
-    OVAL_RELEASE="${VERSION_CODENAME:-}"
-    if [[ ! "$OVAL_RELEASE" =~ ^[a-z]+$ ]]; then
-        item INFO "Canonical OVAL: Cannot determine Ubuntu release codename"
-    else
-        OVAL_CACHE="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/privsec/oval"
-        if ! mkdir -p "$OVAL_CACHE" 2>/dev/null; then
-            OVAL_CACHE="$(mktemp -d /tmp/privsec-oval.XXXXXXXX)"
-        fi
-        OVAL_FILE="$OVAL_CACHE/com.ubuntu.${OVAL_RELEASE}.usn.oval.xml"
-        OVAL_URL="https://security-metadata.canonical.com/oval/com.ubuntu.${OVAL_RELEASE}.usn.oval.xml.bz2"
-        OVAL_REFRESH=1
-        if [ -s "$OVAL_FILE" ] && [ -n "$(find "$OVAL_FILE" -mmin -1440 -print 2>/dev/null)" ]; then
-            OVAL_REFRESH=0
-        fi
-        if [ "$OVAL_REFRESH" -eq 1 ]; then
-            OVAL_TMP="$(mktemp "$OVAL_CACHE/.oval.XXXXXXXX")"
-            OVAL_XML="$(mktemp "$OVAL_CACHE/.xml.XXXXXXXX")"
-            OVAL_ERR="$(mktemp "$OVAL_CACHE/.curl.XXXXXXXX")"
-            OVAL_HTTP="$(curl --silent --show-error --location --retry 2 --connect-timeout 10 --max-time 180 --output "$OVAL_TMP" --write-out '%{http_code}' "$OVAL_URL" 2>"$OVAL_ERR")"
-            OVAL_CURL_RC=$?
-            OVAL_FORMAT="unknown"
-            if [ "$OVAL_CURL_RC" -eq 0 ] && [ "$OVAL_HTTP" = "200" ] && [ -s "$OVAL_TMP" ]; then
-                OVAL_FORMAT=$(python3 - "$OVAL_TMP" "$OVAL_XML" <<'PYDECOMP'
-import sys, bz2, gzip, shutil
-source, target = sys.argv[1:]
-with open(source, 'rb') as f:
-    header = f.read(3)
-try:
-    if header.startswith(b'BZh'):
-        with bz2.open(source, 'rb') as inp, open(target, 'wb') as out:
-            shutil.copyfileobj(inp, out)
-        print('bzip2')
-    elif header.startswith(b'\x1f\x8b'):
-        with gzip.open(source, 'rb') as inp, open(target, 'wb') as out:
-            shutil.copyfileobj(inp, out)
-        print('gzip')
-    else:
-        shutil.copyfile(source, target)
-        print('plain')
-except (OSError, EOFError, ValueError) as exc:
-    print('invalid:' + str(exc)[:110])
-PYDECOMP
-                )
-                if python3 - "$OVAL_XML" <<'PYOVALVALID'
-import sys
-import xml.etree.ElementTree as ET
-try:
-    root = ET.parse(sys.argv[1]).getroot()
-    valid = root.tag.rsplit('}', 1)[-1] == 'oval_definitions'
-    sys.exit(0 if valid else 1)
-except (ET.ParseError, OSError):
-    sys.exit(1)
-PYOVALVALID
-                then
-                    mv -f "$OVAL_XML" "$OVAL_FILE"
-                    item INFO "Canonical OVAL: Valid feed downloaded (HTTP 200; format=$OVAL_FORMAT; release=$OVAL_RELEASE)"
-                else
-                    OVAL_TYPE="$(file -b "$OVAL_TMP" 2>/dev/null | cut -c1-90)"
-                    item INFO "Canonical OVAL: HTTP 200 but feed could not be validated (format=$OVAL_FORMAT; type=${OVAL_TYPE:-unknown}; release=$OVAL_RELEASE)"
-                fi
-            else
-                OVAL_ERROR="$(head -n 1 "$OVAL_ERR" | cut -c1-160)"
-                if [ "$OVAL_CURL_RC" -ne 0 ]; then
-                    item INFO "Canonical OVAL: Download failed (curl exit=$OVAL_CURL_RC; HTTP=${OVAL_HTTP:-unknown}; ${OVAL_ERROR:-network error})"
-                else
-                    item INFO "Canonical OVAL: Feed unavailable (HTTP=${OVAL_HTTP:-unknown}; release=$OVAL_RELEASE); Canonical may not publish this feed"
-                fi
-            fi
-            rm -f "$OVAL_TMP" "$OVAL_XML" "$OVAL_ERR"
-        fi
-        if [ -s "$OVAL_FILE" ] && python3 - "$OVAL_FILE" <<'PYOVALVALID'
-import sys
-import xml.etree.ElementTree as ET
-try:
-    root = ET.parse(sys.argv[1]).getroot()
-    sys.exit(0 if root.tag.rsplit('}', 1)[-1] == 'oval_definitions' else 1)
-except (ET.ParseError, OSError):
-    sys.exit(1)
-PYOVALVALID
-        then
-            OVAL_AGE_HOURS="$(( ($(date +%s) - $(stat -c %Y "$OVAL_FILE" 2>/dev/null || date +%s)) / 3600 ))"
-            item INFO "Canonical OVAL: Feed age ${OVAL_AGE_HOURS}h; release=$OVAL_RELEASE"
-            if [ "$OVAL_AGE_HOURS" -gt 168 ]; then
-                item INFO "Canonical OVAL: WARNING - feed older than 7 days; results may be outdated"
-            fi
-            OVAL_WORK="$(mktemp -d /tmp/privsec-oval-scan.XXXXXXXX)"
-            oscap oval eval --results "$OVAL_WORK/results.xml" "$OVAL_FILE" > "$OVAL_WORK/oscap.log" 2>&1
-            OVAL_RC=$?
-            if [ "$OVAL_RC" -eq 0 ] && [ -s "$OVAL_WORK/results.xml" ]; then
-                OVAL_LINES="$OVAL_WORK/findings.tsv"
-                if python3 - "$OVAL_WORK/results.xml" "$OVAL_FILE" > "$OVAL_LINES" <<'PYOVAL'
-import sys
-import re
-import xml.etree.ElementTree as ET
-
-results_path, feed_path = sys.argv[1:]
-ns = {
-    'r': 'http://oval.mitre.org/XMLSchema/oval-results-5',
-    'd': 'http://oval.mitre.org/XMLSchema/oval-definitions-5',
-}
-
-def clean(value):
-    return re.sub(r'\s+', ' ', value or '').replace('|', '/').strip()
-
-feed = ET.parse(feed_path).getroot()
-metadata = {}
-for definition in feed.findall('.//d:definitions/d:definition', ns):
-    if definition.get('class', '').lower() not in ('patch', 'vulnerability'):
-        continue
-    ident = definition.get('id')
-    if not ident:
-        continue
-    meta = definition.find('d:metadata', ns)
-    if meta is None:
-        continue
-    title = clean(meta.findtext('d:title', default='', namespaces=ns)) or ident
-    advisory = meta.find('d:advisory', ns)
-    severity = clean(advisory.findtext('d:severity', default='', namespaces=ns) if advisory is not None else '')
-    references = meta.findall('d:reference', ns)
-    usns = []
-    cves = []
-    for ref in references:
-        value = ' '.join((ref.get('ref_id', ''), ref.get('ref_url', '')))
-        usns += re.findall(r'USN-\d+-\d+', value, re.I)
-        cves += re.findall(r'CVE-\d{4}-\d{4,}', value, re.I)
-    if advisory is not None:
-        for cve in advisory.findall('d:cve', ns):
-            cves += re.findall(r'CVE-\d{4}-\d{4,}', cve.text or '', re.I)
-    metadata[ident] = (title, severity, sorted(set(usns)), sorted(set(cves)))
-
-root = ET.parse(results_path).getroot()
-seen = set()
-found = 0
-unknown = 0
-evaluated = 0
-for definition in root.findall('.//r:results/r:system/r:definitions/r:definition', ns):
-    ident = definition.get('definition_id', '')
-    if ident not in metadata or ident in seen:
-        continue
-    seen.add(ident)
-    outcome = (definition.get('result') or '').lower()
-    if outcome in ('unknown', 'error', 'not evaluated', 'not_evaluated'):
-        unknown += 1
-        continue
-    if outcome not in ('true', 'false'):
-        unknown += 1
-        continue
-    evaluated += 1
-    if outcome != 'true':
-        continue
-    title, severity, usns, cves = metadata[ident]
-    sev = severity.lower()
-    # Do not label an advisory CRITICAL without explicit vendor severity.
-    if sev in ('critical', 'high'):
-        level = 'HIGH'
-    elif sev in ('medium', 'moderate', 'low', 'negligible'):
-        level = 'MEDIUM' if sev in ('medium', 'moderate') else 'INFO'
-    else:
-        level = 'INFO'
-    label = ', '.join(usns[:3]) if usns else ident
-    cve_text = ', '.join(cves[:6]) if cves else 'not specified in OVAL metadata'
-    print('FINDING\t{}\t{}'.format(level, clean('{} -- {} | severity: {} | CVEs: {}'.format(label, title, severity or 'not specified', cve_text))[:450]))
-    found += 1
-print('COUNT\t' + str(found))
-print('UNKNOWN\t' + str(unknown))
-print('EVALUATED\t' + str(evaluated))
-print('AVAILABLE\t' + str(len(metadata)))
-PYOVAL
-                then
-                    OVAL_COUNT=0; OVAL_SHOWN=0; OVAL_UNKNOWN=0; OVAL_EVALUATED=0; OVAL_AVAILABLE=0
-                    while IFS=$'\t' read -r kind level message; do
-                        case "$kind" in
-                            COUNT) OVAL_COUNT="$level" ;;
-                            UNKNOWN) OVAL_UNKNOWN="$level" ;;
-                            EVALUATED) OVAL_EVALUATED="$level" ;;
-                            AVAILABLE) OVAL_AVAILABLE="$level" ;;
-                            FINDING)
-                                if [ "$OVAL_SHOWN" -lt 30 ]; then
-                                    item "$level" "Canonical OVAL (applicable security advisory): $message"
-                                    OVAL_SHOWN=$((OVAL_SHOWN + 1))
-                                fi ;;
-                        esac
-                    done < "$OVAL_LINES"
-                    if [ "$OVAL_EVALUATED" -gt 0 ] && [ "$OVAL_UNKNOWN" -eq 0 ] && [ "$OVAL_AGE_HOURS" -le 168 ]; then
-                        OVAL_ASSESSMENT_COMPLETE=true
-                    fi
-                    if [ "$OVAL_COUNT" -eq 0 ] && [ "$OVAL_ASSESSMENT_COMPLETE" = true ]; then
-                        item PASS "Canonical OVAL: No applicable security advisories in evaluated feed (not a guarantee of no CVEs)"
-                    elif [ "$OVAL_COUNT" -eq 0 ]; then
-                        item INFO "Canonical OVAL: No confirmed applicable advisories; assessment incomplete (unknown=$OVAL_UNKNOWN; evaluated=$OVAL_EVALUATED; feed age=${OVAL_AGE_HOURS}h)"
-                    fi
-                    if [ "$OVAL_COUNT" -gt "$OVAL_SHOWN" ]; then
-                        item INFO "Canonical OVAL: $((OVAL_COUNT - OVAL_SHOWN)) additional applicable advisories omitted (first 30 shown)"
-                    fi
-                    [ "$OVAL_UNKNOWN" -gt 0 ] && item INFO "Canonical OVAL: $OVAL_UNKNOWN security definitions could not be evaluated conclusively"
-                    [ "$OVAL_EVALUATED" -eq 0 ] && item INFO "Canonical OVAL: No security definitions evaluated; assessment inconclusive"
-                    item INFO "Canonical OVAL: $OVAL_COUNT applicable security advisories; $OVAL_EVALUATED evaluated; $OVAL_AVAILABLE security definitions; feed release=$OVAL_RELEASE"
-                    item INFO "Canonical OVAL: Findings without official severity are informational, not automatically critical"
-                else
-                    item INFO "Canonical OVAL: Could not parse OpenSCAP results; assessment inconclusive"
-                fi
-            else
-                OVAL_LOG="$(tail -n 3 "$OVAL_WORK/oscap.log" 2>/dev/null | tr '\n' ' ' | cut -c1-220)"
-                item INFO "Canonical OVAL: Evaluation failed or incomplete (exit=$OVAL_RC; ${OVAL_LOG:-check OpenSCAP/feed compatibility})"
-            fi
-            rm -rf "$OVAL_WORK"
-        else
-            item INFO "Canonical OVAL: No valid security feed available for $OVAL_RELEASE; CVE patch status remains unknown"
-        fi
-    fi
-fi
-
-section "0x19 │ Dirty Frag - Kernel Package Assessment"
-
-if [ -r /etc/os-release ]; then . /etc/os-release; fi
-DIRTY_RUNNING="$(uname -r)"
-DIRTY_PKG=""
-if command -v dpkg-query >/dev/null 2>&1; then
-    DIRTY_PKG="$(dpkg-query -W -f='${Version}' "linux-image-${DIRTY_RUNNING}" 2>/dev/null || true)"
-fi
-DIRTY_FIXED=""
-DIRTY_FLAVOUR=""
-case "${ID:-}:${VERSION_ID:-}:${DIRTY_RUNNING}" in
-    ubuntu:18.04:4.15.0-*) DIRTY_FIXED='4.15.0-251.263'; DIRTY_FLAVOUR='4.15' ;;
-    ubuntu:18.04:5.4.0-*) DIRTY_FIXED='5.4.0-231.251~18.04.1'; DIRTY_FLAVOUR='5.4 HWE' ;;
-    ubuntu:20.04:5.4.0-*) DIRTY_FIXED='5.4.0-231.251'; DIRTY_FLAVOUR='5.4' ;;
-    ubuntu:20.04:5.15.0-*) DIRTY_FIXED='5.15.0-181.191~20.04.1'; DIRTY_FLAVOUR='5.15 HWE' ;;
-    ubuntu:22.04:5.15.0-*) DIRTY_FIXED='5.15.0-181.191'; DIRTY_FLAVOUR='5.15' ;;
-    ubuntu:22.04:6.8.0-*) DIRTY_FIXED='6.8.0-124.124~22.04.1'; DIRTY_FLAVOUR='6.8 HWE' ;;
-    ubuntu:24.04:6.8.0-*) DIRTY_FIXED='6.8.0-124.124'; DIRTY_FLAVOUR='6.8' ;;
-    ubuntu:24.04:6.17.0-*) DIRTY_FIXED='6.17.0-35.35~24.04.1'; DIRTY_FLAVOUR='6.17 HWE' ;;
-    ubuntu:25.10:6.17.0-*) DIRTY_FIXED='6.17.0-35.35'; DIRTY_FLAVOUR='6.17' ;;
-    ubuntu:26.04:7.0.0-*) DIRTY_FIXED='7.0.0-22.22'; DIRTY_FLAVOUR='7.0' ;;
-esac
-if [ -n "$DIRTY_FIXED" ] && [ -n "$DIRTY_PKG" ] && command -v dpkg >/dev/null 2>&1; then
-    item INFO "Dirty Frag: running ${DIRTY_RUNNING}; package ${DIRTY_PKG}; Ubuntu ${VERSION_ID} (${DIRTY_FLAVOUR})"
-    if dpkg --compare-versions "$DIRTY_PKG" lt "$DIRTY_FIXED"; then
-        item HIGH "Dirty Frag CVE-2026-43284 / CVE-2026-43500: running kernel package below Canonical fix ${DIRTY_FIXED}"
-    else
-        item PASS "Dirty Frag CVE-2026-43284 / CVE-2026-43500: running Ubuntu kernel package meets Canonical fix ${DIRTY_FIXED}"
-    fi
-elif [ "${ID:-}" = ubuntu ] && { [ "${VERSION_ID:-}" = 14.04 ] || [ "${VERSION_ID:-}" = 16.04 ]; }; then
-    item INFO "Dirty Frag: Canonical lists the original Ubuntu ${VERSION_ID} linux package as not affected; custom kernels not assessed"
-else
-    item INFO "Dirty Frag CVE-2026-43284 / CVE-2026-43500: inconclusive (kernel ${DIRTY_RUNNING}, package ${DIRTY_PKG:-unknown}); unsupported kernel flavour or distribution; use Canonical OVAL"
-fi
-
-section "0x1A │ Firewall - Allowed Ports & Rules"
+section "0x18 │ Firewall - Allowed Ports & Rules"
 
 if command -v ufw >/dev/null 2>&1; then
     UFW_STATUS=$(ufw status 2>/dev/null || true)
@@ -1214,11 +1032,11 @@ for raw in sys.stdin:
     rows.append((scope,proto.upper(),port,dest,chain))
 if rows:
     cw=max(14,min(32,width-57))
-    print("    {:<11} {:<5} {:<14} {:<19} {}".format("CONTEXTO","PROTO","PORTA","DESTINO","CHAIN"))
+    print("    {:<11} {:<5} {:<14} {:<19} {}".format("CONTEXT","PROTO","PORT","DESTINATION","CHAIN"))
     print("    " + "─"*min(width-6,95))
     for scope,proto,port,dest,chain in rows[:80]:
         print("    {:<11.11} {:<5} {:<14.14} {:<19.19} {}".format(scope,proto,port,dest,chain[:cw]))
-    if len(rows)>80: print("    ... mais {} regras omitidas".format(len(rows)-80))
+    if len(rows)>80: print("    ... {} additional rules omitted".format(len(rows)-80))
 else:
     print("    No explicit TCP/UDP ACCEPT rules with ports found")
 '
@@ -1231,129 +1049,6 @@ elif command -v iptables >/dev/null 2>&1; then
     iptables -S INPUT 2>/dev/null | grep -E '(^-P INPUT| -j ACCEPT)' | head -n 50 | sed 's/^/    /' || true
 else
     item INFO "No firewall inspection tool available (ufw/nft/iptables)"
-fi
-
-section "0x1B │ Listening Ports & Active Connections"
-if command -v ss >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    SS_DATA=$(ss -H -tunap 2>/dev/null || true)
-    if [ -n "$SS_DATA" ]; then
-        printf '%s\n' "$SS_DATA" | python3 -c '
-import sys,re,os,shutil
-width=max(66,shutil.get_terminal_size((100,24)).columns)
-listening=[]; active=[]; other=[]
-for line in sys.stdin:
-    parts=line.split(None,6)
-    if len(parts)<6: continue
-    proto,state,recv,send,local,peer=parts[:6]
-    detail=parts[6] if len(parts)>6 else ""
-    matches=re.findall(r"\(\"([^\"]+)\",pid=(\d+)",detail)
-    if not matches:
-        matches=[("?",p) for p in re.findall(r"\bpid=(\d+)",detail)]
-    if not matches: matches=[("-","-")]
-    for name,pid in matches:
-        binary="-"
-        if pid.isdigit():
-            try: binary=os.readlink("/proc/"+pid+"/exe")
-            except OSError: binary="unavailable"
-        row=(proto.upper(),state,local,peer,pid,name,binary)
-        if state in ("LISTEN","UNCONN"): listening.append(row)
-        elif state in ("ESTAB","ESTABLISHED"): active.append(row)
-        else: other.append(row)
-
-def show(title,rows,limit):
-    print("\n    {} ({})".format(title,len(rows)))
-    if not rows:
-        print("    Nenhum registo encontrado")
-        return
-    # Narrow terminals: show the binary on a second line so columns never overlap.
-    wide=width>=136
-    if wide:
-        localw=26; remotew=26; procw=17; binw=max(12,width-98)
-        print("    {:<5} {:<11} {:<26} {:<26} {:<7} {:<17} {}".format("PROTO","STATE","LOCAL","REMOTE","PID","PROCESS","BINARY"))
-    else:
-        localw=max(18,min(30,(width-32)//2)); remotew=localw
-        print("    {:<5} {:<11} {:<{w}} {:<{w}} {}".format("PROTO","ESTADO","LOCAL","REMOTO","PID / PROCESSO",w=localw))
-    print("    " + "─"*min(width-6,132))
-    for proto,state,local,peer,pid,name,binary in rows[:limit]:
-        if wide:
-            print("    {:<5.5} {:<11.11} {:<26.26} {:<26.26} {:<7.7} {:<17.17} {}".format(proto,state,local,peer,pid,name,binary[:binw]))
-        else:
-            print("    {:<5.5} {:<11.11} {:<{w}.{w}} {:<{w}.{w}} {} {}".format(proto,state,local,peer,pid,name,w=localw))
-            if binary!="-": print("      ↳ Binary: {}".format(binary[:max(12,width-18)]))
-    if len(rows)>limit: print("    ... {} registos adicionais omitidos".format(len(rows)-limit))
-
-# Defensive reverse-shell triage: correlations, not proof of compromise.
-def proc_details(pid):
-    try:
-        raw=open("/proc/%s/cmdline"%pid,"rb").read(4096)
-        cmd=raw.replace(b"\0",b" ").decode("utf-8","replace").strip()
-    except OSError: cmd="unavailable"
-    try:
-        data=open("/proc/%s/status"%pid).read()
-        parent=re.search(r"^PPid:\s*(\d+)",data,re.M)
-        ppid=parent.group(1) if parent else "?"
-    except OSError: ppid="?"
-    try:
-        parent_cmd=open("/proc/%s/comm"%ppid).read().strip()
-    except OSError: parent_cmd="?"
-    return cmd,ppid,parent_cmd
-
-def remote_ip(endpoint):
-    host=endpoint.rsplit(":",1)[0].strip("[]")
-    if "%" in host: host=host.split("%",1)[0]
-    try:
-        import ipaddress
-        ip=ipaddress.ip_address(host)
-        return ip,not (ip.is_loopback or ip.is_unspecified or ip.is_link_local)
-    except ValueError: return None,False
-
-shell_names={"sh","bash","dash","zsh","ksh","fish","busybox","nc","ncat","netcat","socat","python","python3","perl","php","ruby","node","openssl"}
-seen=set(); suspects=[]
-for proto,state,local,peer,pid,name,binary in active:
-    if proto!="TCP" or not pid.isdigit(): continue
-    key=(pid,local,peer)
-    if key in seen: continue
-    seen.add(key)
-    ip,nonlocal_ip=remote_ip(peer)
-    if not nonlocal_ip: continue
-    cmd,ppid,parent_cmd=proc_details(pid)
-    executable=os.path.basename(binary).lower()
-    short=name.lower()
-    is_shell=short in shell_names or executable in shell_names or any(short.startswith(x) for x in ("python3.","php", "node"))
-    parent_shell=parent_cmd.lower() in shell_names
-    hints=[]
-    if is_shell: hints.append("interpreter/tool with TCP connection")
-    if parent_shell and is_shell: hints.append("parent process is also an interpreter")
-    if re.search(r"/dev/tcp/|/dev/udp/|bash\s+-i|sh\s+-i|pty\.spawn|socket\.connect|subprocess|dup2\s*\(",cmd,re.I):
-        hints.append("argumentos potencialmente associados a shell remota")
-    if hints:
-        suspects.append((pid,name,local,peer,binary,ppid,parent_cmd,cmd,hints))
-
-print("\n    POTENTIAL REVERSE SHELL TRIAGE ({})".format(len(suspects)))
-print("    Heuristic analysis of established TCP connections; does not confirm intrusion")
-if suspects:
-    for pid,name,local,peer,binary,ppid,parent_cmd,cmd,hints in suspects[:40]:
-        print("    [REVER] PID {} | {} | {} -> {}".format(pid,name,local,peer))
-        print("      Binary: {}".format(binary))
-        print("      Parent: {} (PID {}) | Indicators: {}".format(parent_cmd,ppid,"; ".join(hints)))
-        print("      Comando: {}".format(cmd[:max(40,min(width-20,150))]))
-    if len(suspects)>40: print("    ... {} additional processes omitted".format(len(suspects)-40))
-else:
-    print("    No heuristic indicators found in visible connections")
-print("    NOTE: reverse shells may use legitimate binaries or disguised processes;")
-print("    absence of indicators does not guarantee the system is uncompromised")
-
-show("LISTENING PORTS (TCP/UDP)",listening,100)
-show("ESTABLISHED CONNECTIONS",active,100)
-if other: show("OTHER STATES",other,35)
-print("\n    Total: {} listening | {} established | {} other states".format(len(listening),len(active),len(other)))
-'
-        item INFO "Processes may own multiple sockets; binary visibility depends on permissions"
-    else
-        item INFO "ss returned no sockets or permissions are insufficient"
-    fi
-else
-    item INFO "Connection inventory requires ss and python3"
 fi
 
 scan_progress "$SCAN_TOTAL_SECTIONS" "Audit completed"
@@ -1409,16 +1104,13 @@ fi
 
 if [ "$ACTIONABLE_FINDINGS" -eq 0 ]; then
     echo -e "  ${GREEN}${BOLD}[✓]${RESET} ${GREEN}GOOD:${RESET} No high- or medium-risk findings detected"
-    if [ "$OVAL_ASSESSMENT_COMPLETE" = true ]; then
-        echo -e "  ${DIM}    → No findings in completed checks; other vulnerabilities may exist${RESET}\n"
-    else
-        echo -e "  ${YELLOW}    → Canonical OVAL assessment incomplete; CVE status remains unverified${RESET}\n"
-    fi
+    echo -e "  ${DIM}    → CVE checks are indicative; validate patches against your kernel vendor advisories${RESET}
+"
 fi
 
 echo -e "${GRAY}╔═════════════════════════════════════════════════════════════════════════════╗${RESET}"
 printf "${GRAY}║ Scan completed: %-62s${RESET}\n" "$(date '+%Y-%m-%d %H:%M:%S')                                         ║"
-echo -e "${GRAY}║ Report generated by PRIVSEC v3.0                                            ║${RESET}"
+echo -e "${GRAY}║ Report generated by PRIVSEC v3.1                                            ║${RESET}"
 echo -e "${GRAY}╚═════════════════════════════════════════════════════════════════════════════╝${RESET}\n"
 
 if [ "$RUN_LINPEAS" = true ]; then
