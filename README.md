@@ -131,7 +131,7 @@ Contributions welcome! Please feel free to submit issues or pull requests.
 
 ## Author
 
-**Syrus** - Security Researcher
+**Syrus** - CyberSecurity Researcher
 
 ## License
 
@@ -141,6 +141,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [GTFOBins](https://gtfobins.github.io/) - Unix binaries exploitation database
 - [PEASS-ng](https://github.com/carlospolop/PEASS-ng) - LinPEAS integration
-- Security research community
+- CyberSecurity research community
 
 ---
